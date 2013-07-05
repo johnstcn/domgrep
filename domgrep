@@ -1,0 +1,147 @@
+#!/usr/bin/env python2
+# Command-line utility to easily query information from websites.
+# Author: Cian Johnston <johnstcn@gmail.com>
+# Licensed under the WTFPL
+
+import argparse
+import sys
+import requests
+import lxml.html
+import re
+import codecs
+
+sys.stdout = codecs.getwriter('utf8')(sys.stdout)
+
+def do_get(args):
+    """Sends a GET request to the URL, parses the document and returns the element tree"""
+    req = requests.get(args.base_url)
+    if args.verbose:
+        print("GET\t[%d] %s :" % (req.status_code, req.url)),
+        # If we're not printing the count, print a newline
+        # Also don't print a newline if capturing regex
+        if not (args.count or args.regex):
+            print
+    html = ""
+    try:
+        html = unicode(req.content)
+    except UnicodeDecodeError:
+        html = req.content
+    tree = lxml.html.fromstring(html)
+    if args.make_links_absolute:
+            tree.make_links_absolute()
+    return tree
+
+
+def do_post(args):
+    """Sends a POST request to the URL with the given arguments, parses the returned document and returns the element tree"""
+    post_parameters = None
+    if args.form_post:
+        post_parameters = dict(s.split("=") for s in args.form_post)
+    else:
+        post_parameters = args.post
+    req = requests.post(args.base_url, data=post_parameters)
+    if args.verbose:
+        print("POST\t[%d]\t%s\t%s\t" % (req.status_code, req.url,
+            "&".join(["%s=%s" % tup for tup in req.request.data.items()]))),
+    html = ""
+    try:
+        html = unicode(req.content)
+    except UnicodeDecodeError:
+        html = req.content
+    tree = lxml.html.fromstring(html)
+    if args.make_links_absolute:
+        tree.make_links_absolute()
+    return tree
+
+
+def filter_and_print(tree, args):
+    """Finds what we want from the tree and prints it"""
+    out = []
+    for e in tree.cssselect(args.selector):
+        value = ""
+        if not args.attribute:
+            value = e.text_content()
+        else:
+            value = e.get(args.attribute)
+        # If we didn't get anything, return an empty string instead of None
+        if value is None:
+            value = ""
+        # If we didn't get a regex argument, no need to filter
+        if args.regex is None:
+            out.append(value)
+        else:
+            # Do we filter on the same attribute or not?
+            filter_value = ""
+            if args.regex_attr is not None:
+                filter_value = e.get(args.regex_attr)
+            else:
+                filter_value = value
+            # Filter according to regex
+            matches = re.search(args.regex, filter_value)
+            if matches is not None:
+                # Have we captured groups or not?
+                if len(matches.groups()) == 0:
+                    out.append(value)
+                else:
+                    out.append(" ".join(matches.groups()))
+    if args.count:
+        print("%d" % len(out))
+    else:
+        # Strip() will remove all new lines if we didn't get any results
+        print("\n".join(out).strip())
+    # So we can take a peek at what's going on
+    if not out and args.debug_if_no_results:
+        import pdb
+        pdb.set_trace()
+
+
+def go_interactive(tree, args):
+    try:
+        while True:
+            cmd = raw_input("> ")
+            matches = tree.cssselect(cmd)
+            if len(matches):
+                attr = raw_input("%d matches: " % len(matches))
+                if not attr:
+                    for m in matches:
+                        print(lxml.html.tostring(m))
+                else:
+                    for m in matches:
+                        print(m.get(attr))
+    except EOFError:
+        raise SystemExit
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Check for elements in a DOM")
+    parser.add_argument("base_url", help="Base URL (substitute %%d for number)", type=str)
+    parser.add_argument("--selector", "-s", help="Selector for job detail URLs", type=str)
+    parser.add_argument("--attribute", "-a", help="Attribute(s) to return (default: text content)", default="")
+    parser.add_argument("--regex", "-re", help="Filter by regex")
+    parser.add_argument("--regex-attr", help="Filter by a different attribute")
+    parser.add_argument("--count", "-c", help="Output count only", action='store_true')
+    parser.add_argument("--verbose", "-v", action='store_true', help="Verbose output")
+    parser.add_argument("--form-post", "-f", help="POST with parameters form-encoded ", nargs="*")
+    parser.add_argument("--post", "-p", help="POST with raw parameters", type=str)
+    parser.add_argument("--make-links-absolute", "-n", action="store_true", help="Makes links absolute")
+    parser.add_argument("--debug-if-no-results", action="store_true", help="Drops you to pdb if your query returns no results")
+    parser.add_argument("--debug", action="store_true")
+    args = parser.parse_args()
+    if args.debug:
+        import pdb
+        pdb.set_trace()
+    try:
+        tree = None
+        if args.post is None and args.form_post is None:
+            tree = do_get(args)
+        else:
+            tree = do_post(args)
+        if args.selector is None:
+            go_interactive(tree, args)
+        else:
+            filter_and_print(tree, args)
+    except (KeyboardInterrupt):
+        raise(SystemExit)
+
+if __name__ == "__main__":
+    main()
